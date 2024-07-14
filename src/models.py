@@ -74,3 +74,27 @@ class ConvBlock(nn.Module):
         # X = F.glu(X, dim=-2)
 
         return self.dropout(X)
+    
+
+class RNN(nn.Module):
+    def __init__(
+        self,
+        num_classes: int,
+        seq_len: int,
+        in_channels: int,
+        rnn_layers: int = 3,
+        hid_dim: int = 128,
+    ) -> None:
+        super().__init__()
+        self.rnn=nn.RNN(in_channels,hid_dim,rnn_layers,batch_first=True)
+        self.line=nn.Linear(hid_dim,num_classes)
+
+
+    def forward(self, X):
+        x = x.transpose(0, 1)
+        y_rnn, h = self.rnn(x, None) 
+        y = self.line(y_rnn[:, -1, :])
+
+        return y
+    
+    
