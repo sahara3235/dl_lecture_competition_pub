@@ -47,7 +47,7 @@ class ConvBlock(nn.Module):
         in_dim,
         out_dim,
         kernel_size: int = 3,
-        p_drop: float = 0.1,
+        p_drop: float = 0.3,
     ) -> None:
         super().__init__()
         
@@ -143,3 +143,43 @@ class Inception(nn.Module):
         branch4 = self.branch4(x)
         
         return torch.cat([branch1, branch2, branch3, branch4], 1)
+    
+class BasicConvClassifier2(nn.Module):
+    def __init__(
+        self,
+        num_classes: int,
+        seq_len: int,
+        in_channels: int,
+        hid_dim: int = 128
+    ) -> None:
+        super().__init__()
+
+        self.blocks1 = nn.Sequential(
+            ConvBlock(in_channels, hid_dim,kernel_size=1),
+            ConvBlock(hid_dim, hid_dim,kernel_size=3),
+        )
+
+        self.blocks2 = nn.Sequential(
+            ConvBlock(in_channels, hid_dim,kernel_size=3),
+            ConvBlock(hid_dim, hid_dim,kernel_size=3),
+        )
+
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            Rearrange("b d 1 -> b d"),
+            nn.Linear(hid_dim, num_classes/2),
+        )
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        """_summary_
+        Args:
+            X ( b, c, t ): _description_
+        Returns:
+            X ( b, num_classes ): _description_
+        """
+        x1 = self.blocks1(X)
+        x1=self.head(x1)
+        x2 = self.blocks2(X)
+        x2=self.head(x2)
+
+        return torch.cat((x1,x2),dim=0)
