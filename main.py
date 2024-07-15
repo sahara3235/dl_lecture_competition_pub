@@ -10,7 +10,7 @@ from termcolor import cprint
 from tqdm import tqdm
 
 from src.datasets import ThingsMEGDataset
-from src.models import BasicConvClassifier
+from src.models import Inception
 from src.inception import Inception3
 from src.utils import set_seed
 
@@ -45,8 +45,10 @@ def run(args: DictConfig):
     ).to(args.device)
 
     '''
-    model = Inception3(
-        train_set.num_classes, train_set.seq_len, train_set.num_channels
+    model = Inception(
+        train_set.num_channels,
+        450,450,450,504
+
     ).to(args.device)
     # ------------------
     #     Optimizer
