@@ -11,8 +11,8 @@ from tqdm import tqdm
 
 from src.datasets import ThingsMEGDataset
 from src.models import BasicConvClassifier
+from src.inception import Inception3
 from src.utils import set_seed
-
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def run(args: DictConfig):
@@ -45,7 +45,7 @@ def run(args: DictConfig):
     ).to(args.device)
 
     '''
-    model = RNN(
+    model = Inception3(
         train_set.num_classes, train_set.seq_len, train_set.num_channels
     ).to(args.device)
     # ------------------
@@ -77,6 +77,9 @@ def run(args: DictConfig):
             
             optimizer.zero_grad()
             loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
             optimizer.step()
             
             acc = accuracy(y_pred, y)
