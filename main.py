@@ -2,17 +2,23 @@ import os, sys
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.optim as optim
 from torchmetrics import Accuracy
 import hydra
 from omegaconf import DictConfig
 import wandb
 from termcolor import cprint
 from tqdm import tqdm
+import optuna
 
 from src.datasets import ThingsMEGDataset
-from src.models import Inception
-from src.inception import Inception3
+from src.models import BasicConvClassifier
+from src.models import RNN
 from src.utils import set_seed
+
+
+
+
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def run(args: DictConfig):
@@ -35,39 +41,54 @@ def run(args: DictConfig):
     test_loader = torch.utils.data.DataLoader(
         test_set, shuffle=False, batch_size=args.batch_size, num_workers=args.num_workers
     )
+    def get_optimizer(trial, model):
+        optimizer_names = ['Adam', 'MomentumSGD', 'rmsprop']
+        optimizer_name = trial.suggest_categorical('optimizer', optimizer_names)
+        weight_decay = trial.suggest_loguniform('weight_decay', 1e-10, 1e-3)
+        if optimizer_name == optimizer_names[0]: 
+            adam_lr = trial.suggest_loguniform('adam_lr', 1e-5, 1e-1)
+            optimizer = optim.Adam(model.parameters(), lr=adam_lr, weight_decay=weight_decay)
+        elif optimizer_name == optimizer_names[1]:
+            momentum_sgd_lr = trial.suggest_loguniform('momentum_sgd_lr', 1e-5, 1e-1)
+            optimizer = optim.SGD(model.parameters(), lr=momentum_sgd_lr, momentum=0.9, weight_decay=weight_decay)
+        else:
+            optimizer = optim.RMSprop(model.parameters())
+        return optimizer
 
-    # ------------------
-    #       Model
-    # ------------------
-    '''
-    model = BasicConvClassifier(
-        train_set.num_classes, train_set.seq_len, train_set.num_channels
-    ).to(args.device)
+    def get_activation(trial):
+        activation_names = ['ReLU', 'Sigmoid','Tanh']
+        activation_name = trial.suggest_categorical('activation', activation_names)
+        if activation_name == activation_names[0]:
+            activation = F.relu
+        elif activation_name == activation_names[1]:
+            activation = F.sigmoid
+        else:
+            activation =F.tanh
+        return activation
+    EPOCH=15
+    def objective(trial):
+        #畳み込み層の数
+        #num_layer = trial.suggest_int('num_layer', 3, 7)
 
-    '''
-    model = Inception(
-        train_set.num_channels,
-        450,450,450,504
+        #FC層のユニット数
+        hid_dim = int(trial.suggest_discrete_uniform("hid_dim", 100, 500, 100))
 
-    ).to(args.device)
-    # ------------------
-    #     Optimizer
-    # ------------------
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        #各畳込み層のフィルタ数
+        #num_filters = [int(trial.suggest_discrete_uniform("num_filter_"+str(i), 16, 128, 16)) for i in range(num_layer)]
 
-    # ------------------
-    #   Start training
-    # ------------------  
-    max_val_acc = 0
-    accuracy = Accuracy(
-        task="multiclass", num_classes=train_set.num_classes, top_k=10
-    ).to(args.device)
-      
-    for epoch in range(args.epochs):
-        print(f"Epoch {epoch+1}/{args.epochs}")
-        
-        train_loss, train_acc, val_loss, val_acc = [], [], [], []
-        
+        model = RNN(trial,num_classes=1854, seq_len=281, in_channels=271,hid_dim=hid_dim).to(args.device)
+        optimizer = get_optimizer(trial, model)
+
+        accuracy = Accuracy(task="multiclass", num_classes=1854, top_k=10).to(args.device)
+
+        for step in range(EPOCH):
+            train_loss, train_acc, val_loss, val_acc = [], [], [], []
+            train(model=model,train_loader=train_loader, optimizer=optimizer,train_loss=train_loss,accuracy=accuracy,train_acc=train_acc)
+
+            error_rate = test(model=model,val_loader=val_loader,val_loss=val_loss,val_acc=val_acc,accuracy=accuracy)
+        return error_rate
+
+    def train(model,train_loader,optimizer,train_loss,accuracy,train_acc):
         model.train()
         for X, y, subject_idxs in tqdm(train_loader, desc="Train"):
             X, y = X.to(args.device), y.to(args.device)
@@ -87,6 +108,7 @@ def run(args: DictConfig):
             acc = accuracy(y_pred, y)
             train_acc.append(acc.item())
 
+    def test(model,val_loader,val_loss,val_acc,accuracy):
         model.eval()
         for X, y, subject_idxs in tqdm(val_loader, desc="Validation"):
             X, y = X.to(args.device), y.to(args.device)
@@ -96,32 +118,16 @@ def run(args: DictConfig):
             
             val_loss.append(F.cross_entropy(y_pred, y).item())
             val_acc.append(accuracy(y_pred, y).item())
+        return 1-np.mean(val_acc)
 
-        print(f"Epoch {epoch+1}/{args.epochs} | train loss: {np.mean(train_loss):.3f} | train acc: {np.mean(train_acc):.3f} | val loss: {np.mean(val_loss):.3f} | val acc: {np.mean(val_acc):.3f}")
-        torch.save(model.state_dict(), os.path.join(logdir, "model_last.pt"))
-        if args.use_wandb:
-            wandb.log({"train_loss": np.mean(train_loss), "train_acc": np.mean(train_acc), "val_loss": np.mean(val_loss), "val_acc": np.mean(val_acc)})
-        
-        if np.mean(val_acc) > max_val_acc:
-            cprint("New best.", "cyan")
-            torch.save(model.state_dict(), os.path.join(logdir, "model_best.pt"))
-            max_val_acc = np.mean(val_acc)
-            
-    
-    # ----------------------------------
-    #  Start evaluation with best model
-    # ----------------------------------
-    model.load_state_dict(torch.load(os.path.join(logdir, "model_best.pt"), map_location=args.device))
+    TRIAL_SIZE = 30
+    study = optuna.create_study()
+    study.optimize(objective, n_trials=TRIAL_SIZE)
+    print(study.best_params)
+    print(study.best_value)
 
-    preds = [] 
-    model.eval()
-    for X, subject_idxs in tqdm(test_loader, desc="Validation"):        
-        preds.append(model(X.to(args.device)).detach().cpu())
-        
-    preds = torch.cat(preds, dim=0).numpy()
-    np.save(os.path.join(logdir, "submission"), preds)
-    cprint(f"Submission {preds.shape} saved at {logdir}", "cyan")
 
 
 if __name__ == "__main__":
     run()
+
